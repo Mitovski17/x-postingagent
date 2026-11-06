@@ -1,0 +1,16 @@
+node_modules
+dist
+.DS_Store
+*.log
+
+# Local secrets and private keys: never commit
+.env
+.env.local
+.env.*.local
+extension/config.js
+
+# Local backups and Supabase CLI state
+.backup-*
+supabase/.temp
+supabase/.branches
+.vercel

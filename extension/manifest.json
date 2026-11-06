@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "X Queue Replies",
+  "version": "1.0.0",
+  "description": "Adds a Draft button to posts on X. Claude writes reply options, you pick one and it goes into the reply box.",
+  "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["https://xssvfmbkgpchmfimjhdf.supabase.co/*"]
+}
