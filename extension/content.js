@@ -214,7 +214,7 @@
     return null;
   }
 
-  const norm = (t) => (t || "").replace(/\s+/g, " ").trim();
+  const norm = (t) => (t || "").replace(/[\u200b-\u200d\ufeff]/g, "").replace(/\s+/g, " ").trim();
   const holds = (ed, text) => ed.isConnected && norm(ed.innerText) === norm(text);
 
   // Opens X's reply box for this post. Returns the editor and its send button,
@@ -269,10 +269,50 @@
     const dt = new DataTransfer();
     dt.setData("text/plain", text);
     ed.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
-    if (await waitFor(() => holds(ed, text), 1200)) return true;
+    if (await waitFor(() => holds(ed, text), 1500)) return true;
     selectAll(ed);
+    const active = document.activeElement;
+    if (!(active === ed || ed.contains(active))) return false;
     document.execCommand("insertText", false, text);
-    return !!(await waitFor(() => holds(ed, text), 1200));
+    return !!(await waitFor(() => holds(ed, text), 1500));
+  }
+
+  // X's other post boxes (the "What's happening" box on the home feed) must never keep
+  // a reply. Empties any box outside the reply dialog that holds this text.
+  async function clearLeftovers(text) {
+    for (const ed of document.querySelectorAll('[data-testid="tweetTextarea_0"]')) {
+      if (!holds(ed, text)) continue;
+      selectAll(ed);
+      document.execCommand("delete");
+      if (holds(ed, text)) {
+        selectAll(ed);
+        document.execCommand("insertText", false, "");
+      }
+    }
+  }
+
+  // After "Edit on X": waits until the reply dialog closes, then records the reply
+  // (only if X confirmed it was sent) and tidies up any leftover copy of the text.
+  async function watchManualSend(mine, c, text) {
+    let sentToast = false;
+    const end = Date.now() + 10 * 60 * 1000;
+    while (Date.now() < end && c.ed.isConnected && norm(c.ed.innerText) !== "") {
+      await sleep(400);
+    }
+    sentToast = !!(await waitFor(
+      () =>
+        Array.from(document.querySelectorAll('[data-testid="toast"], [role="alert"]')).some((t) =>
+          /sent|posted/i.test(t.innerText || ""),
+        ),
+      4000,
+    ));
+    await clearLeftovers(text);
+    if (sentToast && mine.id) send({ action: "replied", id: mine.id, text });
+    if (state === mine && sentToast) {
+      mine.note = "Replied on X.";
+      render();
+      setTimeout(() => state === mine && closePanel(), 1500);
+    }
   }
 
   async function insert(andSend) {
@@ -299,8 +339,8 @@
     if (!andSend) {
       mine.busy = false;
       mine.note = "In the reply box. Check it and press Reply on X.";
-      if (mine.id) send({ action: "replied", id: mine.id, text });
       if (state === mine) render();
+      watchManualSend(mine, c, text);
       return;
     }
 
@@ -316,6 +356,7 @@
 
     if (mine.id) send({ action: "replied", id: mine.id, text });
     mine.busy = false;
+    await clearLeftovers(text);
     mine.note = "Replied.";
     if (state !== mine) return;
     render();
