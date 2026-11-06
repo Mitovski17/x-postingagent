@@ -198,7 +198,7 @@
   function count(s) {
     // X counts most emoji and CJK characters as 2.
     let n = 0;
-    for (const ch of s) n += /[ᄀ-￿]/.test(ch) || ch.codePointAt(0) > 0xffff ? 2 : 1;
+    for (const ch of s) n += /[\u1100-\uffff]/.test(ch) || ch.codePointAt(0) > 0xffff ? 2 : 1;
     return n;
   }
 
@@ -285,7 +285,7 @@
     kids.push(
       el("div", { class: "h" },
         el("span", { class: "t" }, "Reply drafts"),
-        el("button", { class: "x", "aria-label": "Close", title: "Close (Esc)", onclick: closePanel }, "×"),
+        el("button", { class: "x", "aria-label": "Close", title: "Close (Esc)", onclick: closePanel }, "\u00d7"),
       ),
       el("div", { class: "post" },
         el("div", { class: "who" }, `${s.post.author_name ? s.post.author_name + " " : ""}@${s.post.author_username}`),
@@ -296,7 +296,7 @@
 
     if (s.loading) {
       kids.push(el("div", { class: "opts", "aria-busy": "true" }, el("div", { class: "sk" }), el("div", { class: "sk" }), el("div", { class: "sk" })));
-      kids.push(el("div", { class: "msg", role: "status" }, "Claude is writing…"));
+      kids.push(el("div", { class: "msg", role: "status" }, "Claude is writing\u2026"));
     } else if (s.drafts.length) {
       kids.push(
         el("div", { class: "opts", role: "radiogroup", "aria-label": "Reply options" },
@@ -333,7 +333,7 @@
     }
 
     if (!s.loading && s.post.text) {
-      const steer = el("input", { placeholder: "Steer it: shorter, more contrarian, add a stat…", "aria-label": "Note for Claude" });
+      const steer = el("input", { placeholder: "Steer it: shorter, more contrarian, add a stat\u2026", "aria-label": "Note for Claude" });
       steer.value = s.steer;
       steer.addEventListener("input", () => (s.steer = steer.value));
       steer.addEventListener("keydown", (e) => {
