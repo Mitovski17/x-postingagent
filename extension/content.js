@@ -143,7 +143,7 @@
   }
 
   function onKey(e) {
-    if (e.key === "Escape" && host) closePanel();
+    if (e.key === "Escape" && host && e.composedPath().includes(host)) closePanel();
   }
 
   function openPanel(post) {
@@ -153,7 +153,7 @@
     root = host.attachShadow({ mode: "open" });
     document.body.appendChild(host);
     document.addEventListener("keydown", onKey, true);
-    state = { post, id: null, drafts: [], choice: 0, text: "", steer: "", loading: false, error: "", note: "" };
+    state = { post, id: null, drafts: [], choice: 0, text: "", steer: "", loading: false, error: "", note: "", busy: false, fallback: false };
     if (!post.text) {
       state.error = "This post has no text to reply to.";
       render();
@@ -214,56 +214,112 @@
     return null;
   }
 
-  function editorText(ed) {
-    return (ed.innerText || "").replace(/\s+/g, " ").trim();
-  }
+  const norm = (t) => (t || "").replace(/\s+/g, " ").trim();
+  const holds = (ed, text) => ed.isConnected && norm(ed.innerText) === norm(text);
 
-  async function insert() {
-    const text = state.text.trim();
-    if (!text) return;
-    const mine = state;
-    const article = findArticle(mine.post.tweet_id);
-    let done = false;
-
-    if (article) {
-      const replyBtn = article.querySelector('[data-testid="reply"]');
-      if (replyBtn) replyBtn.click();
-      const ed = await waitFor(
-        () =>
-          document.querySelector('[role="dialog"] [data-testid="tweetTextarea_0"]') ||
-          document.querySelector('[data-testid="tweetTextarea_0"]'),
-      );
+  // Opens X's reply box for this post. Returns the editor and its send button,
+  // or null when it can't be sure the box belongs to this post.
+  async function openComposer(tweetId) {
+    const article = findArticle(tweetId);
+    if (!article) return null;
+    const before = new Set(document.querySelectorAll('[role="dialog"]'));
+    const replyBtn = article.querySelector('[data-testid="reply"]');
+    if (!replyBtn) return null;
+    replyBtn.click();
+    const dlg = await waitFor(
+      () =>
+        Array.from(document.querySelectorAll('[role="dialog"]')).find(
+          (d) => !before.has(d) && d.querySelector('[data-testid="tweetTextarea_0"]'),
+        ),
+      2500,
+    );
+    if (dlg) {
+      return {
+        ed: dlg.querySelector('[data-testid="tweetTextarea_0"]'),
+        sendBtn: () => dlg.querySelector('[data-testid="tweetButton"]'),
+      };
+    }
+    // On the post's own page X may focus the reply box under it instead of opening a dialog.
+    if (location.pathname.includes(`/status/${tweetId}`)) {
+      const ed = document.querySelector('[data-testid="tweetTextarea_0"]');
       if (ed) {
-        ed.focus();
-        ed.click();
-        await sleep(120);
-        const probe = text.slice(0, 20).replace(/\s+/g, " ");
-        document.execCommand("insertText", false, text);
-        await sleep(150);
-        if (editorText(ed).includes(probe)) done = true;
-        else {
-          const dt = new DataTransfer();
-          dt.setData("text/plain", text);
-          ed.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
-          await sleep(150);
-          done = editorText(ed).includes(probe);
-        }
+        return {
+          ed,
+          sendBtn: () =>
+            document.querySelector('[data-testid="tweetButtonInline"]') || document.querySelector('[data-testid="tweetButton"]'),
+        };
       }
     }
+    return null;
+  }
 
-    if (!done) {
-      // Fallback: open X's reply page with the text filled in.
-      window.open(
-        `https://x.com/intent/post?in_reply_to=${mine.post.tweet_id}&text=${encodeURIComponent(text)}`,
-        "_blank",
-        "noopener",
-      );
-    }
-    if (mine.id) send({ action: "replied", id: mine.id, text });
-    if (state !== mine) return;
-    state.note = done ? "In the reply box. Check it and press Reply." : "Opened in a new tab with your reply filled in.";
+  function selectAll(ed) {
+    ed.focus();
+    const r = document.createRange();
+    r.selectNodeContents(ed);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+
+  // Replaces whatever is in the box with text. Every attempt replaces the whole
+  // selection, so the text can never end up in the box twice.
+  async function fill(ed, text) {
+    selectAll(ed);
+    const dt = new DataTransfer();
+    dt.setData("text/plain", text);
+    ed.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    if (await waitFor(() => holds(ed, text), 1200)) return true;
+    selectAll(ed);
+    document.execCommand("insertText", false, text);
+    return !!(await waitFor(() => holds(ed, text), 1200));
+  }
+
+  async function insert(andSend) {
+    const text = state.text.trim();
+    if (!text || state.busy) return;
+    const mine = state;
+    mine.busy = true;
+    mine.error = "";
+    mine.note = andSend ? "Replying\u2026" : "Opening the reply box\u2026";
     render();
-    if (done) setTimeout(() => state === mine && closePanel(), 1800);
+
+    const fail = (msg) => {
+      mine.busy = false;
+      mine.note = "";
+      mine.error = msg;
+      mine.fallback = true;
+      if (state === mine) render();
+    };
+
+    const c = await openComposer(mine.post.tweet_id);
+    if (!c) return fail("Couldn't open X's reply box for this post. Scroll it into view and try again, or use Open on X.");
+    if (!(await fill(c.ed, text))) return fail("X didn't accept the text. Try again, or use Copy and paste it in.");
+
+    if (!andSend) {
+      mine.busy = false;
+      mine.note = "In the reply box. Check it and press Reply on X.";
+      if (mine.id) send({ action: "replied", id: mine.id, text });
+      if (state === mine) render();
+      return;
+    }
+
+    const btn = await waitFor(() => {
+      const b = c.sendBtn();
+      return b && !b.disabled && b.getAttribute("aria-disabled") !== "true" ? b : null;
+    }, 3000);
+    if (!btn) return fail("X's Reply button stayed disabled. The text is in the box, press Reply there.");
+    if (!holds(c.ed, text)) return fail("The reply box changed before sending. Check it and press Reply on X.");
+    btn.click();
+    const sent = await waitFor(() => !c.ed.isConnected || norm(c.ed.innerText) === "", 10000);
+    if (!sent) return fail("X didn't confirm the reply. Check the reply box before trying again.");
+
+    if (mine.id) send({ action: "replied", id: mine.id, text });
+    mine.busy = false;
+    mine.note = "Replied.";
+    if (state !== mine) return;
+    render();
+    setTimeout(() => state === mine && closePanel(), 1500);
   }
 
   async function copy() {
@@ -324,7 +380,8 @@
         const c = root.querySelector(".cnt");
         c.textContent = `${count(s.text)}/${LIMIT}`;
         c.classList.toggle("over", count(s.text) > LIMIT);
-        root.querySelector(".pri").toggleAttribute("disabled", !s.text.trim() || count(s.text) > LIMIT);
+        const bad = !s.text.trim() || count(s.text) > LIMIT;
+        root.querySelectorAll(".acts .send").forEach((b) => b.toggleAttribute("disabled", bad));
       });
       kids.push(
         el("label", { class: "lbl" }, el("span", {}, "Your reply"), el("span", { class: `cnt${len > LIMIT ? " over" : ""}` }, `${len}/${LIMIT}`)),
@@ -343,12 +400,26 @@
     }
 
     if (s.drafts.length && !s.loading) {
+      const off = !s.text.trim() || len > LIMIT || s.busy ? "" : null;
       kids.push(
         el("div", { class: "acts" },
-          el("button", { class: "btn", onclick: copy }, "Copy"),
-          el("button", { class: "btn pri", onclick: insert, disabled: !s.text.trim() || len > LIMIT ? "" : null }, "Put in reply box"),
+          el("button", { class: "btn", onclick: copy, disabled: s.busy ? "" : null }, "Copy"),
+          el("button", { class: "btn send", onclick: () => insert(false), disabled: off, title: "Put it in X's reply box so you can edit it there" }, "Edit on X"),
+          el("button", { class: "btn pri send", onclick: () => insert(true), disabled: off, title: "Post this reply now" }, "Reply"),
         ),
       );
+      if (s.fallback && !s.busy) {
+        kids.push(
+          el("div", { class: "acts" },
+            el("a", {
+              class: "btn",
+              href: `https://x.com/intent/post?in_reply_to=${s.post.tweet_id}&text=${encodeURIComponent(s.text.trim())}`,
+              target: "_blank",
+              rel: "noopener",
+            }, "Open on X"),
+          ),
+        );
+      }
     }
 
     if (s.error) kids.push(el("div", { class: "msg err", role: "alert" }, s.error));
